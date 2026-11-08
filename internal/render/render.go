@@ -14,13 +14,14 @@ import (
 )
 
 const (
-	W, H   = 220, 128 // low-res canvas
-	Scale  = 3        // final pixels per canvas pixel
+	W, H   = 330, 192 // low-res canvas
+	Scale  = 2        // final pixels per canvas pixel
 	Frames = 36
 	Delay  = 6 // centiseconds
-	gridN  = 21
-	gridZ  = 40
-	ctr    = gridN / 2
+	gridN  = 37
+	gridZ  = 48
+	ctr    = 18 // trunk occupies ctr..ctr+1
+	top    = 6  // z of the island's grass layer
 )
 
 // ---- palette ---------------------------------------------------------
@@ -45,11 +46,7 @@ func (p *palette) add(hex uint32) uint8 {
 
 func shade(hex uint32, f float64) uint32 {
 	r, g, b := float64(hex>>16&255), float64(hex>>8&255), float64(hex&255)
-	// darker sides drift slightly towards violet, which reads warmer and cuter.
-	r = r * f
-	g = g * f * 0.99
-	b = math.Min(255, b*f*1.04+(1-f)*30)
-	return uint32(r)<<16 | uint32(g)<<8 | uint32(b)
+	return uint32(r*f)<<16 | uint32(g*f)<<8 | uint32(math.Min(255, b*f*1.03+(1-f)*24))
 }
 
 type material struct{ top, left, right uint8 }
@@ -75,46 +72,44 @@ type voxel struct {
 	decal uint8 // face decals on the +x face
 }
 
-const (
-	decalEye uint8 = iota + 1
-	decalMouth
-)
+const decalEye uint8 = 1
 
-type scene struct {
-	p     *palette
-	g     [gridN][gridN][gridZ]voxel
-	rng   *rand.Rand
-	st    github.Stats
-	trunk int // top z of trunk
-	oy    int
-	ox    int
-
-	// palette entries
-	sky                           [5]uint8
-	sun, sunGlow, cloud, cloudSh  uint8
-	ink, inkSoft, card, cardEdge  uint8
-	pink, white, yellow, leafSpec uint8
-	leafMats                      [4]material
-	wing                          [2]uint8
-	faceInk, blush                uint8
-	boxCol, purple                uint8
-	order                         []struct{ x, y, z int }
-	falling                       []fallingLeaf
-	flies                         []butterfly
-	sparks                        [][3]int
-}
-
-type fallingLeaf struct {
-	x, y   int
-	phase  float64
-	sway   float64
-	colour uint8
+type petal struct {
+	x, y  int
+	phase float64
+	sway  float64
+	m     material
 }
 
 type butterfly struct {
 	cx, cy, rx, ry int
 	phase          float64
 	wing           uint8
+}
+
+type scene struct {
+	p   *palette
+	g   [gridN][gridN][gridZ]voxel
+	rng *rand.Rand
+	st  github.Stats
+
+	trunk  int // top z of trunk
+	ox, oy int
+	cy     int // screen y of the canopy centre
+
+	bg                            [5]uint8
+	starDim, starBright           uint8
+	cardBg, cardEdge, cardShadow  uint8
+	lime, limeInk, text, textSoft uint8
+	eye, blush, white, yellow     uint8
+	wing                          [2]uint8
+	iconLeaf, iconStar, iconHeart uint8
+	iconBox, iconPR               uint8
+	order                         []struct{ x, y, z int }
+	petals                        []petal
+	flies                         []butterfly
+	sparks                        [][3]int
+	stars                         [][3]int
 }
 
 var sprite [8][8]uint8 // 0 none, 1 top, 2 left, 3 right
@@ -144,33 +139,37 @@ func hash3(x, y, z int) uint32 {
 
 func clamp(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v)) }
 
+func abs(a int) int {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
 func newScene(st github.Stats) *scene {
 	h := fnv.New64a()
 	h.Write([]byte(st.Login))
 	seed := h.Sum64()
 	sc := &scene{p: newPalette(), st: st, rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))}
 	p := sc.p
-	for i, hex := range []uint32{0xb8e2ff, 0xc9ebff, 0xdaf3ff, 0xe8f8ff, 0xf6fcff} {
-		sc.sky[i] = p.add(hex)
+	for i, hex := range []uint32{0x0e1813, 0x11201a, 0x14261d, 0x182e22, 0x1c3727} {
+		sc.bg[i] = p.add(hex)
 	}
-	sc.sun, sc.sunGlow = p.add(0xfff1a1), p.add(0xfff8cf)
-	sc.cloud, sc.cloudSh = p.add(0xffffff), p.add(0xe2f0fb)
-	sc.ink, sc.inkSoft = p.add(0x3d3357), p.add(0x7a6f99)
-	sc.card, sc.cardEdge = p.add(0xfffaf3), p.add(0xf0d9c8)
-	sc.pink, sc.white, sc.yellow = p.add(0xff9ec4), p.add(0xffffff), p.add(0xffe066)
-	sc.leafSpec = p.add(0xd8ff9c)
+	sc.starDim, sc.starBright = p.add(0x4d6b5a), p.add(0xcfe8d6)
+	sc.cardBg, sc.cardEdge, sc.cardShadow = p.add(0x13241d), p.add(0x2f5242), p.add(0x0a110e)
+	sc.lime, sc.limeInk = p.add(0xb8f55a), p.add(0x10201a)
+	sc.text, sc.textSoft = p.add(0xe9f1dc), p.add(0x8fae9c)
+	sc.eye, sc.blush = p.add(0xfff0dc), p.add(0xff8fab)
+	sc.white, sc.yellow = p.add(0xffffff), p.add(0xffe066)
 	sc.wing = [2]uint8{p.add(0xffb3d1), p.add(0xffd86b)}
-	sc.faceInk, sc.blush = p.add(0x2b2142), p.add(0xff8fab)
-	for i, hex := range []uint32{0x2f9a52, 0x4fbf62, 0x7ad96c, 0xa9f08c} {
-		sc.leafMats[i] = p.mat(hex)
-	}
-	sc.boxCol, sc.purple = p.add(0xb98458), p.add(0xa98bff)
+	sc.iconLeaf, sc.iconStar, sc.iconHeart = p.add(0x7ad96c), p.add(0xffd84d), p.add(0xff8fb0)
+	sc.iconBox, sc.iconPR = p.add(0xd49a66), p.add(0xb79cff)
 	sc.build()
 	return sc
 }
 
 func (sc *scene) set(x, y, z int, k kind, m material) {
-	if x < 0 || y < 0 || z < 0 || x >= gridN || y >= gridN || z >= gridZ {
+	if x < 0 || y < 0 || z < 0 || x >= gridN || y >= gridN || z >= gridZ || sc.g[x][y][z].set {
 		return
 	}
 	sc.g[x][y][z] = voxel{set: true, kind: k, m: m}
@@ -178,143 +177,181 @@ func (sc *scene) set(x, y, z int, k kind, m material) {
 
 func (sc *scene) build() {
 	st, p := sc.st, sc.p
-	grassA, grassB := p.mat(0x8fd86a), p.mat(0x84cf62)
-	dirt, dirtB := p.mat(0xc99361), p.mat(0xb98250)
-	trunkM := p.mat(0xb98458)
-	blossom := p.mat(0xffb3d3)
+	trunkM := p.mat(0x4a2e27)
 	apple := p.mat(0xff5468)
-	petals := []material{p.mat(0xffe066), p.mat(0xffffff), p.mat(0xff9ec4), p.mat(0xc4a8ff)}
-
-	// floating island
-	type layer struct {
-		z int
-		r float64
-	}
-	const top = 4
-	for i, l := range []layer{{4, 7.3}, {3, 6.7}, {2, 5.2}, {1, 3.5}, {0, 1.9}} {
-		for x := 0; x < gridN; x++ {
-			for y := 0; y < gridN; y++ {
-				if math.Hypot(float64(x-ctr), float64(y-ctr)) > l.r {
-					continue
-				}
-				m := dirt
-				if (x+y+i)%3 == 0 {
-					m = dirtB
-				}
-				if l.z == top {
-					m = grassA
-					if hash3(x, y, 1)%3 == 0 {
-						m = grassB
-					}
-				}
-				sc.set(x, y, l.z, solid, m)
-			}
-		}
-	}
+	petalMats := []material{p.mat(0xf0b6cf), p.mat(0xdcd2e6), p.mat(0xf7c9dc), p.mat(0xffffff)}
+	flowers := []material{p.mat(0xffe066), p.mat(0xffffff), p.mat(0xff9ec4), p.mat(0xc4a8ff)}
 
 	// trunk: older accounts grow taller
 	years := clamp(st.AccountYears, 0, 8)
-	th := 6 + int(math.Round(years/8*3))
-	sc.trunk = top + th
+	sc.trunk = top + 10 + int(math.Round(years/8*3))
 	for z := top + 1; z <= sc.trunk; z++ {
-		for x := ctr - 1; x <= ctr+1; x++ {
-			for y := ctr - 1; y <= ctr+1; y++ {
+		for x := ctr; x <= ctr+1; x++ {
+			for y := ctr; y <= ctr+1; y++ {
 				sc.set(x, y, z, solid, trunkM)
 			}
 		}
 	}
-	// root flare
-	for _, d := range [][2]int{{2, 0}, {-2, 0}, {0, 2}, {0, -2}} {
+	for _, d := range [][2]int{{-1, 0}, {2, 1}, {0, 2}, {1, -1}} {
 		sc.set(ctr+d[0], ctr+d[1], top+1, solid, trunkM)
 	}
-	// kawaii face on the +x side of the trunk
 	fz := top + 3
-	sc.g[ctr+1][ctr-1][fz].decal = decalEye
+	sc.g[ctr+1][ctr][fz].decal = decalEye
 	sc.g[ctr+1][ctr+1][fz].decal = decalEye
-	sc.g[ctr+1][ctr][fz].decal = decalMouth
 
-	// canopy size comes from yearly contributions (public repos as a fallback)
+	// canopy size follows yearly contributions (public repos as a fallback)
 	activity := float64(st.Contributions)
 	if st.Contributions < 0 {
 		activity = float64(st.Repos) * 25
 	}
-	r := 3.8 + 2.6*clamp(math.Log10(activity+1)/3.6, 0, 1)
-	cz := float64(sc.trunk) + r*0.72
+	r := 7.5 + 4.5*clamp(math.Log10(activity+1)/3.6, 0, 1)
+	cz := float64(sc.trunk) + r*0.7
 	type blob struct{ x, y, z, r float64 }
-	blobs := []blob{{ctr, ctr, cz, r}}
-	nb := 5
-	for i := 0; i < nb; i++ {
-		a := 2*math.Pi*float64(i)/float64(nb) + sc.rng.Float64()*0.5
-		d := r * (0.6 + sc.rng.Float64()*0.15)
-		blobs = append(blobs, blob{ctr + math.Cos(a)*d, ctr + math.Sin(a)*d,
-			cz - r*0.05 + (sc.rng.Float64()-0.3)*r*0.3, r * (0.55 + sc.rng.Float64()*0.12)})
+	blobs := []blob{{ctr + 1, ctr + 1, cz, r}}
+	for i := 0; i < 6; i++ {
+		a := 2*math.Pi*float64(i)/6 + sc.rng.Float64()*0.6
+		d := r * (0.62 + sc.rng.Float64()*0.2)
+		blobs = append(blobs, blob{ctr + 1 + math.Cos(a)*d, ctr + 1 + math.Sin(a)*d,
+			cz + (sc.rng.Float64()-0.5)*r*0.35, r * (0.5 + sc.rng.Float64()*0.15)})
 	}
-	for x := 0; x < gridN; x++ {
-		for y := 0; y < gridN; y++ {
-			for z := 0; z < gridZ; z++ {
-				if sc.g[x][y][z].set {
-					continue
-				}
-				best, bi := 9.0, -1
-				for i, b := range blobs {
-					dx, dy, dz := float64(x)-b.x, float64(y)-b.y, (float64(z)-b.z)/0.86
-					d := math.Sqrt(dx*dx+dy*dy+dz*dz) / b.r
-					if d < best {
-						best, bi = d, i
+
+	// canopy: chunky 2x2x2 blocks in sage, lavender and blossom pink
+	sage := []material{p.mat(0xa9ba6f), p.mat(0x8fa35a), p.mat(0xdcd2e6)}
+	pinkM := p.mat(0xf0b6cf)
+	branch := p.mat(0x5a3a2c)
+	pinkP := 0.18 + 0.30*clamp(float64(st.Followers)/150, 0, 1)
+	type cell struct{ i, j, k int }
+	var cells []cell
+	for i := 0; i < gridN/2; i++ {
+		for j := 0; j < gridN/2; j++ {
+			for k := 0; k < gridZ/2; k++ {
+				cx, cy, cz2 := float64(2*i+1), float64(2*j+1), float64(2*k+1)
+				best := 9.0
+				for _, b := range blobs {
+					dz := (cz2 - b.z) / 0.62
+					if d := math.Sqrt((cx-b.x)*(cx-b.x)+(cy-b.y)*(cy-b.y)+dz*dz) / b.r; d < best {
+						best = d
 					}
 				}
-				if best > 1 {
+				hh := hash3(i, j, k)
+				if best+float64(hh%100)/100*0.7 >= 1 || hh%100 < 7 {
 					continue
 				}
-				b := blobs[bi]
-				tone := 1 + int(hash3(x/2, y/2, bi)%2)
-				if float64(z) > b.z+b.r*0.3 {
-					tone = 3
-				} else if float64(z) < b.z-b.r*0.35 {
-					tone = 0
+				if sc.g[2*i][2*j][2*k].set {
+					continue
 				}
-				sc.set(x, y, z, leaf, sc.leafMats[tone])
+				var m material
+				switch roll := sc.rng.Float64(); {
+				case roll < 0.04:
+					m = branch
+				case roll < 0.04+pinkP:
+					m = pinkM
+				case roll < 0.04+pinkP+(1-pinkP)*0.45:
+					m = sage[0]
+				case roll < 0.04+pinkP+(1-pinkP)*0.7:
+					m = sage[1]
+				default:
+					m = sage[2]
+				}
+				for dx := 0; dx < 2; dx++ {
+					for dy := 0; dy < 2; dy++ {
+						for dz := 0; dz < 2; dz++ {
+							sc.set(2*i+dx, 2*j+dy, 2*k+dz, leaf, m)
+						}
+					}
+				}
+				cells = append(cells, cell{i, j, k})
 			}
 		}
 	}
 
-	// candidate surface voxels that face the camera (+x or +y free)
-	var cand [][3]int
-	for x := 1; x < gridN-1; x++ {
-		for y := 1; y < gridN-1; y++ {
-			for z := int(cz - r*0.5); z < gridZ-1; z++ {
-				v := sc.g[x][y][z]
-				if v.set && v.kind == leaf && (!sc.g[x+1][y][z].set || !sc.g[x][y+1][z].set) &&
-					sc.g[x][y][z+1].set && x+y >= 2*ctr-3 {
-					cand = append(cand, [3]int{x, y, z})
+	// one apple per star, hanging under front-facing canopy blocks
+	var cand []cell
+	for _, c := range cells {
+		if c.i+c.j >= ctr-3 && 2*c.k-1 > sc.trunk && !sc.g[2*c.i][2*c.j][2*c.k-1].set {
+			cand = append(cand, c)
+		}
+	}
+	sc.rng.Shuffle(len(cand), func(a, b int) { cand[a], cand[b] = cand[b], cand[a] })
+	for n := 0; n < min(st.Stars, 12) && n < len(cand); n++ {
+		c := cand[n]
+		sc.set(2*c.i+sc.rng.IntN(2), 2*c.j+sc.rng.IntN(2), 2*c.k-1, fruit, apple)
+	}
+
+	// island: speckled grass, dirt rim with stones, tapering underside
+	shadow := map[[2]int]bool{}
+	for x := 0; x < gridN; x++ {
+		for y := 0; y < gridN; y++ {
+			for z := sc.trunk; z < gridZ; z++ {
+				if sc.g[x][y][z].kind == leaf {
+					shadow[[2]int{x - 3, y + 3}] = true
+					break
 				}
 			}
 		}
 	}
-	sc.rng.Shuffle(len(cand), func(i, j int) { cand[i], cand[j] = cand[j], cand[i] })
-	take := func(n int, m material, k kind) {
-		for ; n > 0 && len(cand) > 0; n-- {
-			c := cand[0]
-			cand = cand[1:]
-			sc.set(c[0], c[1], c[2], k, m)
+	greens := []uint32{0x6cbd48, 0x78c850, 0x62b043, 0x84d25c}
+	var grass, grassSh [4]material
+	for i, g := range greens {
+		grass[i], grassSh[i] = p.mat(g), p.mat(shade(g, 0.72))
+	}
+	dirt := []material{p.mat(0x7a4a2e), p.mat(0x6b3f27), p.mat(0x84552f)}
+	stone := p.mat(0x77776f)
+	deep := []material{p.mat(0x4a3226), p.mat(0x3c281f)}
+	type layer struct {
+		z int
+		r float64
+	}
+	for _, l := range []layer{{6, 13}, {5, 12.4}, {4, 10.6}, {3, 8.4}, {2, 6.2}, {1, 4}, {0, 2}} {
+		for x := 0; x < gridN; x++ {
+			for y := 0; y < gridN; y++ {
+				d := math.Hypot(float64(x-ctr)-.5, float64(y-ctr)-.5)
+				if d > l.r+float64(hash3(x, y, l.z)%3)*0.3-0.3 {
+					continue
+				}
+				h := int(hash3(x, y, l.z+40))
+				var m material
+				switch {
+				case l.z == top:
+					m = grass[h%4]
+					if shadow[[2]int{x, y}] {
+						m = grassSh[h%4]
+					}
+				case l.z == top-1:
+					m = dirt[h%3]
+					if h%9 == 0 {
+						m = stone
+					}
+				case l.z >= 3:
+					m = dirt[h%3]
+					if h%7 == 0 {
+						m = stone
+					}
+				default:
+					m = deep[h%2]
+				}
+				sc.set(x, y, l.z, solid, m)
+				// little grass bumps on the rim
+				if l.z == top && d > 10.5 && h%11 == 0 {
+					sc.set(x, y, top+1, solid, grass[(h/3)%4])
+				}
+			}
 		}
 	}
-	take(min(st.Stars, 12), apple, fruit)        // one apple per star
-	take(min(st.Followers/4, 16), blossom, leaf) // blossoms for followers
 
 	// flowers on the grass, one per repo
 	var spots [][2]int
 	for x := 0; x < gridN; x++ {
 		for y := 0; y < gridN; y++ {
-			if sc.g[x][y][top].set && !sc.g[x][y][top+1].set && math.Hypot(float64(x-ctr), float64(y-ctr)) < 6.6 &&
-				(abs(x-ctr) > 2 || abs(y-ctr) > 2) && x+y > 2*ctr-6 {
+			if sc.g[x][y][top].set && !sc.g[x][y][top+1].set && math.Hypot(float64(x-ctr), float64(y-ctr)) < 11 &&
+				(abs(x-ctr) > 3 || abs(y-ctr) > 3) && x+y > 2*ctr-8 {
 				spots = append(spots, [2]int{x, y})
 			}
 		}
 	}
 	sc.rng.Shuffle(len(spots), func(i, j int) { spots[i], spots[j] = spots[j], spots[i] })
-	for i := 0; i < min(st.Repos, 9) && i < len(spots); i++ {
-		sc.set(spots[i][0], spots[i][1], top+1, solid, petals[i%len(petals)])
+	for i := 0; i < min(st.Repos, 12) && i < len(spots); i++ {
+		sc.set(spots[i][0], spots[i][1], top+1, solid, flowers[i%len(flowers)])
 	}
 
 	// render order: back to front
@@ -332,36 +369,32 @@ func (sc *scene) build() {
 		}
 	}
 
-	// centre the picture vertically
+	// centre the picture vertically; keep it right of the stats card
 	minY, maxY := 1<<30, -1<<30
 	for _, o := range sc.order {
 		sy := (o.x+o.y)*2 - o.z*4
 		minY, maxY = min(minY, sy), max(maxY, sy+8)
 	}
 	sc.oy = (H-(maxY-minY))/2 - minY
-	sc.ox = 164
+	sc.ox = 246
+	sc.cy = sc.oy + (2*ctr+2)*2 - int(cz)*4
 
 	// critters
-	canopyTop := sc.oy + (2*ctr)*2 - int(cz+r)*4
-	for i := 0; i < 6; i++ {
-		sc.falling = append(sc.falling, fallingLeaf{
-			x: sc.ox - 34 + sc.rng.IntN(70), y: max(canopyTop+20, 30) + sc.rng.IntN(15),
-			phase: float64(i) / 6, sway: 2 + sc.rng.Float64()*2, colour: sc.leafMats[1+sc.rng.IntN(3)].top})
+	for i := 0; i < 16; i++ {
+		sc.petals = append(sc.petals, petal{
+			x: sc.ox - 70 + sc.rng.IntN(140), y: sc.cy - 20 + sc.rng.IntN(30),
+			phase: float64(i) / 16, sway: 2 + sc.rng.Float64()*3, m: petalMats[sc.rng.IntN(len(petalMats))]})
 	}
 	for i := 0; i < int(clamp(float64(st.PullRequests)/15, 1, 4)); i++ {
-		sc.flies = append(sc.flies, butterfly{cx: sc.ox - 50 + i*34, cy: 62 + (i%2)*12 - 10, rx: 12 + i*2, ry: 6,
+		sc.flies = append(sc.flies, butterfly{cx: sc.ox - 80 + i*52, cy: sc.cy + 20 + (i%2)*14, rx: 16 + i*3, ry: 8,
 			phase: float64(i) * 0.27, wing: sc.wing[i%2]})
 	}
-	for i := 0; i < 5; i++ {
-		sc.sparks = append(sc.sparks, [3]int{sc.ox - 44 + sc.rng.IntN(90), canopyTop + sc.rng.IntN(60), sc.rng.IntN(Frames)})
+	for i := 0; i < 6; i++ {
+		sc.sparks = append(sc.sparks, [3]int{sc.ox - 60 + sc.rng.IntN(120), sc.cy - 40 + sc.rng.IntN(60), sc.rng.IntN(Frames)})
 	}
-}
-
-func abs(a int) int {
-	if a < 0 {
-		return -a
+	for i := 0; i < 45; i++ {
+		sc.stars = append(sc.stars, [3]int{sc.rng.IntN(W), sc.rng.IntN(H), sc.rng.IntN(Frames)})
 	}
-	return a
 }
 
 // ---- drawing ---------------------------------------------------------
@@ -382,11 +415,11 @@ func (c canvas) rect(x, y, w, h int, i uint8) {
 	}
 }
 
-func (c canvas) bitmap(x, y int, bm string, col uint8) {
+func (c canvas) bitmap(x, y, scale int, bm string, col uint8) {
 	for dy, row := range rows(bm) {
 		for dx, ch := range row {
 			if ch == '#' {
-				c.put(x+dx, y+dy, col)
+				c.rect(x+dx*scale, y+dy*scale, scale, scale, col)
 			}
 		}
 	}
@@ -405,16 +438,6 @@ func (c canvas) text(x, y, scale int, s string, col uint8) {
 	}
 }
 
-func (c canvas) disc(cx, cy int, r float64, i uint8) {
-	for y := cy - int(r) - 1; y <= cy+int(r)+1; y++ {
-		for x := cx - int(r) - 1; x <= cx+int(r)+1; x++ {
-			if math.Hypot(float64(x-cx), float64(y-cy)) <= r {
-				c.put(x, y, i)
-			}
-		}
-	}
-}
-
 func (c canvas) cube(sx, sy int, v voxel) {
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 8; x++ {
@@ -430,27 +453,19 @@ func (c canvas) cube(sx, sy int, v voxel) {
 	}
 }
 
-func (sc *scene) decal(c canvas, sx, sy int, d uint8, blink bool) {
+func (sc *scene) decal(c canvas, sx, sy int, blink bool) {
 	px := func(x, y int, i uint8) { c.put(sx-4+x, sy+y, i) }
-	switch d {
-	case decalEye:
-		if blink {
-			px(5, 4, sc.faceInk)
-			px(6, 4, sc.faceInk)
-		} else {
-			px(5, 3, sc.faceInk)
-			px(5, 4, sc.faceInk)
-			px(6, 4, sc.faceInk)
-			px(6, 3, sc.white)
-		}
-		px(5, 6, sc.blush)
-		px(6, 6, sc.blush)
-	case decalMouth:
-		px(4, 5, sc.faceInk)
-		px(5, 6, sc.faceInk)
-		px(6, 6, sc.faceInk)
-		px(7, 5, sc.faceInk)
+	if blink {
+		px(5, 4, sc.eye)
+		px(6, 4, sc.eye)
+	} else {
+		px(5, 3, sc.eye)
+		px(5, 4, sc.eye)
+		px(6, 3, sc.eye)
+		px(6, 4, sc.eye)
 	}
+	px(5, 6, sc.blush)
+	px(6, 6, sc.blush)
 }
 
 func fmtNum(n int) string {
@@ -491,80 +506,67 @@ func (sc *scene) frame(k int) *image.Paletted {
 	t := float64(k) / Frames
 	tau := 2 * math.Pi
 
-	// sky with dithered bands
-	bands := []int{26, 52, 78, 100}
+	// night-forest sky with dithered bands
+	bands := []int{40, 80, 120, 156}
 	for y := 0; y < H; y++ {
 		b := 0
 		for b < len(bands) && y >= bands[b] {
 			b++
 		}
 		for x := 0; x < W; x++ {
-			i := sc.sky[b]
+			i := sc.bg[b]
 			if b > 0 && y-bands[b-1] < 2 && (x+y)%2 == 0 {
-				i = sc.sky[b-1]
+				i = sc.bg[b-1]
 			}
 			c.Pix[y*c.Stride+x] = i
 		}
 	}
-	// sun
-	c.disc(W-22, 20, 12, sc.sunGlow)
-	c.disc(W-22, 20, 8, sc.sun)
-	// clouds that gently bob
-	for i, cl := range [][3]int{{30, 112, 0}, {62, 100, 1}, {18, 14, 0}, {96, 24, 1}} {
-		_ = i
-		dy := int(math.Round(math.Sin(tau*(t+float64(cl[2])*.5)) * 1.2))
-		x, y := cl[0], cl[1]+dy
-		if y > 90 { // lower clouds sit behind the card, so they peek out under the island
-			continue
+	for _, s := range sc.stars {
+		ph := (k - s[2] + Frames) % Frames
+		if ph < 6 {
+			c.put(s[0], s[1], sc.starBright)
+		} else {
+			c.put(s[0], s[1], sc.starDim)
 		}
-		c.disc(x, y+2, 4, sc.cloudSh)
-		c.disc(x+7, y+3, 3, sc.cloudSh)
-		c.disc(x, y, 4, sc.cloud)
-		c.disc(x+6, y+1, 3, sc.cloud)
-		c.disc(x+3, y-2, 4, sc.cloud)
 	}
-	c.disc(sc.ox-62, 110, 5, sc.cloud)
-	c.disc(sc.ox-55, 111, 4, sc.cloud)
-	c.disc(sc.ox+58, 106, 5, sc.cloud)
-	c.disc(sc.ox+65, 107, 4, sc.cloud)
 
-	// butterflies behind the tree
 	sc.drawFlies(c, k, false)
 
-	// tree
-	bob := int(math.Round(math.Sin(tau*t) * 1.4))
+	// the floating island and tree
+	bob := int(math.Round(math.Sin(tau*t) * 1.6))
 	blink := k >= 20 && k <= 22
 	for _, o := range sc.order {
 		v := sc.g[o.x][o.y][o.z]
 		sx := (o.x-o.y)*4 + sc.ox
 		sy := (o.x+o.y)*2 - o.z*4 + sc.oy + bob
 		if v.kind == leaf || v.kind == fruit {
-			// sway grows with height above the trunk
-			h := float64(o.z-sc.trunk) / 9
-			sx += int(math.Round(math.Sin(tau*t-float64(o.z)*0.18) * (0.4 + 1.6*clamp(h, 0, 1))))
+			h := float64(o.z-sc.trunk) / 12
+			sx += int(math.Round(math.Sin(tau*t-float64(o.z)*0.15) * (0.5 + 1.5*clamp(h, 0, 1))))
 			if v.kind == fruit {
 				sy += int(math.Round(math.Sin(tau*(t+float64(o.x)*0.13)) * 0.8))
 			}
 		}
 		c.cube(sx, sy, v)
 		if v.decal != 0 {
-			sc.decal(c, sx, sy, v.decal, blink)
+			sc.decal(c, sx, sy, blink)
 		}
 	}
 
-	// falling leaves
-	for _, f := range sc.falling {
+	// drifting petals
+	for _, f := range sc.petals {
 		p := math.Mod(t+f.phase, 1)
 		x := f.x + int(math.Round(math.Sin(tau*(p*2))*f.sway))
-		y := f.y + int(p*58)
-		if p > 0.88 {
-			c.put(x, y, f.colour)
-		} else {
-			c.rect(x, y, 2, 2, f.colour)
-			c.put(x+1, y+1, sc.leafMats[0].top)
+		y := f.y + int(p*90)
+		if p > 0.9 {
+			c.put(x, y, f.m.top)
+			continue
+		}
+		c.rect(x, y, 2, 1, f.m.top)
+		c.rect(x, y+1, 2, 1, f.m.right)
+		if k%2 == 0 {
+			c.put(x+2, y, f.m.left)
 		}
 	}
-	// sparkles
 	for _, s := range sc.sparks {
 		ph := (k - s[2] + Frames) % Frames
 		if ph < 4 {
@@ -577,7 +579,7 @@ func (sc *scene) frame(k int) *image.Paletted {
 			}
 		}
 	}
-	sc.drawFlies(c, k, true) // every other butterfly flutters in front
+	sc.drawFlies(c, k, true)
 	sc.drawCard(c)
 	return upscale(c.Paletted)
 }
@@ -591,39 +593,34 @@ func (sc *scene) drawFlies(c canvas, k int, front bool) {
 		x := b.cx + int(math.Round(math.Cos(a)*float64(b.rx)))
 		y := b.cy + int(math.Round(math.Sin(2*a)*float64(b.ry)))
 		if (k/2)%2 == 0 {
-			c.put(x-2, y-1, b.wing)
-			c.put(x-1, y-1, b.wing)
-			c.put(x+1, y-1, b.wing)
-			c.put(x+2, y-1, b.wing)
-			c.put(x-1, y, b.wing)
-			c.put(x+1, y, b.wing)
+			c.rect(x-3, y-2, 2, 2, b.wing)
+			c.rect(x+1, y-2, 2, 2, b.wing)
+			c.rect(x-2, y, 2, 1, b.wing)
+			c.rect(x, y, 2, 1, b.wing)
 		} else {
-			c.put(x-1, y-1, b.wing)
-			c.put(x+1, y-1, b.wing)
-			c.put(x-1, y, b.wing)
-			c.put(x+1, y, b.wing)
+			c.rect(x-2, y-1, 2, 2, b.wing)
+			c.rect(x, y-1, 2, 2, b.wing)
 		}
-		c.put(x, y, sc.faceInk)
-		c.put(x, y-1, sc.faceInk)
+		c.rect(x-1, y-2, 1, 3, sc.text)
 	}
 }
 
 func (sc *scene) drawCard(c canvas) {
-	const x0, y0, x1, y1 = 4, 4, 112, H - 5
-	c.rect(x0+1, y0, x1-x0-2, y1-y0, sc.cardEdge)
-	c.rect(x0, y0+1, x1-x0, y1-y0-2, sc.cardEdge)
-	c.rect(x0+2, y0+1, x1-x0-4, y1-y0-2, sc.card)
-	c.rect(x0+1, y0+2, x1-x0-2, y1-y0-4, sc.card)
+	const x0, y0, x1, y1 = 8, 8, 158, H - 8
+	c.rect(x0+3, y0+3, x1-x0, y1-y0, sc.cardShadow)
+	c.rect(x0, y0, x1-x0, y1-y0, sc.cardEdge)
+	c.rect(x0+2, y0+2, x1-x0-4, y1-y0-4, sc.cardBg)
 
 	st := sc.st
-	name := st.Login
-	scale := 2
-	if textWidth(name, 2) > x1-x0-14 {
-		scale = 1
+	c.rect(x0+8, y0+7, textWidth("HARVEST", 2)+8, 14, sc.lime)
+	c.text(x0+12, y0+9, 2, "HARVEST", sc.limeInk)
+
+	scale := 3
+	for scale > 1 && textWidth(st.Login, scale) > x1-x0-16 {
+		scale--
 	}
-	c.text(x0+8, y0+7, scale, name, sc.ink)
-	sub := "GROWN IN " + trim(st.AccountYears) + " YRS"
-	c.text(x0+8, y0+7+5*scale+3, 1, sub, sc.inkSoft)
+	c.text(x0+8, y0+28, scale, st.Login, sc.text)
+	c.text(x0+8, y0+47, 2, "GROWN IN "+trim(st.AccountYears)+" YRS", sc.textSoft)
 
 	type row struct {
 		icon  string
@@ -631,22 +628,22 @@ func (sc *scene) drawCard(c canvas) {
 		n     int
 		label string
 	}
-	rowsData := []row{
-		{iconLeaf, sc.leafMats[1].left, st.Contributions, "CONTRIBS"},
-		{iconStar, sc.yellow, st.Stars, "STARS"},
-		{iconHeart, sc.pink, st.Followers, "FOLLOWERS"},
-		{iconBox, sc.boxCol, st.Repos, "REPOS"},
-		{iconDiamnd, sc.purple, st.PullRequests, "PULLS"},
+	data := []row{
+		{iconLeaf, sc.iconLeaf, st.Contributions, "CONTRIBS"},
+		{iconStar, sc.iconStar, st.Stars, "STARS"},
+		{iconHeart, sc.iconHeart, st.Followers, "FOLLOWERS"},
+		{iconBox, sc.iconBox, st.Repos, "REPOS"},
+		{iconDiamnd, sc.iconPR, st.PullRequests, "PULLS"},
 	}
-	y := y0 + 32
-	for _, r := range rowsData {
-		c.bitmap(x0+8, y+3, r.icon, r.col)
-		c.text(x0+17, y, 2, fmtNum(r.n), sc.ink)
-		c.text(x0+17+5*8+2, y+5, 1, r.label, sc.inkSoft)
-		y += 14
+	y := y0 + 64
+	for _, r := range data {
+		c.bitmap(x0+8, y+2, 2, r.icon, r.col)
+		c.text(x0+22, y, 3, fmtNum(r.n), sc.text)
+		c.text(x0+22+5*12+4, y+5, 1, r.label, sc.textSoft)
+		y += 19
 	}
 	if st.TopLanguage != "" {
-		c.text(x0+8, y+1, 1, "LOVES "+st.TopLanguage, sc.ink)
+		c.text(x0+8, y+3, 2, "LOVES "+st.TopLanguage, sc.lime)
 	}
 }
 
