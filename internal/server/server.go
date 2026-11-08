@@ -187,7 +187,7 @@ button,.btn{padding:10px 18px;border-radius:12px;border:0;background:var(--btn);
 pre{text-align:left;overflow:auto;background:var(--card);border:2px solid var(--edge);border-radius:12px;padding:12px;font-size:.85rem;user-select:all}
 </style></head><body><main>
 <img src="/{{if .User}}{{.User}}{{else}}demo{{end}}.gif" alt="your harvest tree" width="660" height="384">
-<h1>harvest 🌳</h1>
+<h1>harvest</h1>
 <p>A little voxel tree that grows from your GitHub stats.</p>
 <form onsubmit="location.href='/?user='+encodeURIComponent(this.u.value);return false">
 <input name="u" placeholder="github username" value="{{.User}}" autocomplete="off" spellcheck="false">
